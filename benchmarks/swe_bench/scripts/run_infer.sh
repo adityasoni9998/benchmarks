@@ -114,7 +114,7 @@ function run_eval() {
     --eval-note $eval_note \
     --dataset $DATASET \
     --split $SPLIT \
-    --eval-output-dir /data/user_data/adityabs/swe_bench_outputs"
+    --eval-output-dir /mnt/nfs-shared-centralus/adityabs/swe_bench_outputs"
 
 
   echo "$COMMAND"

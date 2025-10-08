@@ -215,3 +215,5 @@ workspace/
 # IDE and editor directories
 .openhands/
 .vscode/
+
+config.toml

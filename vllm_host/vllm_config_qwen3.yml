@@ -1,0 +1,11 @@
+model: Qwen/Qwen3-8B
+host: "127.0.0.1"
+port: 2339
+uvicorn-log-level: "critical"
+api-key: "aditya_vllm"
+gpu-memory-utilization: 0.8
+tokenizer: Qwen/Qwen3-8B
+tensor-parallel-size: 2
+enable-auto-tool-choice: true
+tool-call-parser: hermes
+reasoning-parser: qwen3
