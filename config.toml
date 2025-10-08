@@ -1,0 +1,11 @@
+[core]
+workspace_base="./workspace"
+debug=true
+
+[llm.swe_gym]
+model="openai/Qwen/Qwen3-8B"
+api_key="aditya_vllm"
+base_url="http://127.0.0.1:8000/v1"
+disable_vision=true
+caching_prompt=false
+log_completions=true

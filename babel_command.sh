@@ -1,0 +1,1 @@
+salloc --mem=200GB --gres=gpu:L40:2 --time=03:00:00 --partition=debug
