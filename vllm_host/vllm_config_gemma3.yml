@@ -1,0 +1,11 @@
+model: google/gemma-3-12b-it
+host: "127.0.0.1"
+port: 2339
+uvicorn-log-level: "critical"
+api-key: "aditya_vllm"
+gpu-memory-utilization: 0.8
+tokenizer: google/gemma-3-12b-it
+tensor-parallel-size: 4
+enable-auto-tool-choice: true
+tool-call-parser: pythonic
+chat-template: "tool_chat_template_gemma3.jinja"
