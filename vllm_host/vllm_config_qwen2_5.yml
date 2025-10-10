@@ -5,6 +5,6 @@ uvicorn-log-level: "critical"
 api-key: "aditya_vllm"
 gpu-memory-utilization: 0.8
 tokenizer: Qwen/Qwen2.5-Coder-7B-Instruct
-tensor-parallel-size: 2
+tensor-parallel-size: 4
 enable-auto-tool-choice: true
 tool-call-parser: hermes

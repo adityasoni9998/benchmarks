@@ -5,7 +5,7 @@ uvicorn-log-level: "critical"
 api-key: "aditya_vllm"
 gpu-memory-utilization: 0.8
 tokenizer: meta-llama/Llama-3.1-8B-Instruct
-tensor-parallel-size: 2
+tensor-parallel-size: 4
 enable-auto-tool-choice: true
 tool-call-parser: llama3_json
 chat-template: "tool_chat_template_llama3.1_json.jinja"

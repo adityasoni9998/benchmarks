@@ -386,7 +386,8 @@ def main():
         base_url=llm_config.base_url,
         temperature=llm_config.temperature,
         top_p=llm_config.top_p,
-        top_k=llm_config.top_k
+        top_k=llm_config.top_k,
+        # native_tool_calling=True,
     )
     # llm = LLM(
     #     model="openai/Qwen/Qwen3-8B",
