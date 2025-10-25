@@ -18,8 +18,8 @@ from benchmarks.utils.models import (
     EvalMetadata,
     EvalOutput,
 )
-from openhands.sdk import get_logger
-from openhands.sdk.workspace import RemoteWorkspace
+from openhands.sdk import get_logger  # type: ignore
+from openhands.sdk.workspace import RemoteWorkspace  # type: ignore
 
 
 logger = get_logger(__name__)
@@ -103,13 +103,14 @@ class Evaluation(ABC, BaseModel):
             ):
                 try:
                     instance, out = fut.result()
+                    assert out is not None, "sub-process errored out"
                 except Exception as e:
                     logger.error(
                         f"Error during instance evaluation: {e}",
                         exc_info=True,
                         stack_info=True,
                     )
-                    raise
+                    continue
 
                 outputs.append(out)
                 if on_result:
@@ -117,6 +118,32 @@ class Evaluation(ABC, BaseModel):
                         on_result(instance, out)
                     except Exception as cb_err:
                         logger.warning("on_result callback failed: %s", cb_err)
+        # for inst in tqdm(instances, desc="Evaluating", leave=False):
+        #     try:
+        #         # Create a fresh single-worker pool for each instance
+        #         with ProcessPoolExecutor(
+        #             max_workers=1,
+        #             initializer=_child_init,
+
+        #         ) as pool:
+        #             future = pool.submit(self._process_one_mp, inst)
+        #             instance, out = future.result(timeout=3600)
+        #             # Add timeout if desired
+        #             outputs.append(out)
+
+        #             if on_result:
+        #                 try:
+        #                     on_result(instance, out)
+        #                 except Exception as cb_err:
+        #                     logger.warning("on_result callback failed: %s", cb_err)
+
+        #     except Exception as e:
+        #         logger.error(
+        #             f"Error during instance evaluation (id={inst.id}): {e}",
+        #             exc_info=True,
+        #             stack_info=True,
+        #         )
+        #         continue
 
         logger.info("Evaluation complete: %d/%d done", len(outputs), total)
         return outputs
@@ -124,19 +151,23 @@ class Evaluation(ABC, BaseModel):
     # --- Worker-side method (executed in child processes) ---------------------------
     def _process_one_mp(
         self, instance: EvalInstance
-    ) -> Tuple[EvalInstance, EvalOutput]:
+    ) -> Tuple[EvalInstance, EvalOutput] | Tuple[EvalInstance, None]:
         """Execute one instance in a child process.
 
         - Creates workspace in the *child* process
         - Ensures proper context-managed cleanup
         - Returns (instance, output) so the parent can stream results
         """
-        logger.info("[child] start id=%s", instance.id)
+        try:
+            logger.info("[child] start id=%s", instance.id)
 
-        workspace = self.prepare_workspace(instance)
-        out = self.evaluate_instance(instance, workspace)
-        logger.info("[child] done id=%s", instance.id)
-        return instance, out
+            workspace = self.prepare_workspace(instance)
+            out = self.evaluate_instance(instance, workspace)
+            logger.info("[child] done id=%s", instance.id)
+            workspace.cleanup()
+            return instance, out
+        except Exception as _:
+            return instance, None
 
 
 # ---------- Optional per-process initializer ---------------------------------------

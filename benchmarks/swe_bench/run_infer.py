@@ -16,11 +16,11 @@ from benchmarks.utils.models import (
     EvalMetadata,
     EvalOutput,
 )
-from openhands.agent_server.docker.build import SDK_VERSION, _base_slug
-from openhands.sdk import LLM, Agent, Conversation, get_logger
-from openhands.sdk.workspace import RemoteWorkspace
-from openhands.tools.preset.default import get_default_tools
-from openhands.workspace import DockerWorkspace
+from openhands.agent_server.docker.build import SDK_VERSION, _base_slug  # type: ignore
+from openhands.sdk import LLM, Agent, Conversation, get_logger  # type: ignore
+from openhands.sdk.workspace import RemoteWorkspace  # type: ignore
+from openhands.tools.preset.default import get_default_tools  # type: ignore
+from openhands.workspace import DockerWorkspace  # type: ignore
 
 
 logger = get_logger(__name__)
@@ -47,7 +47,7 @@ def get_agent_server_docker_image(
     official_image_name = get_official_docker_image(instance_id, docker_image_prefix)
     return (
         "ghcr.io/all-hands-ai/agent-server"
-        + f":v{SDK_VERSION}_{_base_slug(official_image_name)}_{target}"
+        + f":v{SDK_VERSION}_{_base_slug(official_image_name)}_{target}-dev"
     )
 
 
