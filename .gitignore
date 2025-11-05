@@ -215,5 +215,6 @@ workspace/
 !.llm_config/example.json
 
 # Evaluation outputs
-./eval_outputs
-./builds
+builds/
+# evaluation_results/
+evaluation_results*/
