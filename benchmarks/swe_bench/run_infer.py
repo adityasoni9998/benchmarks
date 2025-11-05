@@ -208,9 +208,13 @@ class SWEBenchEvaluation(Evaluation):
             _messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)
             llm: LLM = self.metadata.llm
             formatted_messages = llm.format_messages_for_llm(_messages)
+            mocked_messages, _ = llm.pre_request_prompt_mock(formatted_messages, [], {})
             if formatted_messages[-1].get("role") == "assistant":
                 return
-            log_ctx = {"messages": formatted_messages[:]}
+            log_ctx = {
+                "messages": formatted_messages[:],
+                "mock_tool_messages": mocked_messages[:],
+            }
             if len(formatted_messages) > prev_len:
                 prev_len = len(formatted_messages)
                 log_file = os.path.join(log_directory, f"log{file_cnt}.json")
