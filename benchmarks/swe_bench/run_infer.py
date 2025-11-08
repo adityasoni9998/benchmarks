@@ -1,8 +1,12 @@
+import json
 import os
 from pathlib import Path
 from typing import List
 
 from jinja2 import Environment, FileSystemLoader
+from litellm.types.llms.openai import ResponsesAPIResponse
+from litellm.types.utils import ModelResponse
+from pydantic import BaseModel
 
 from benchmarks.utils.args_parser import get_parser
 from benchmarks.utils.dataset import get_dataset
@@ -17,7 +21,7 @@ from benchmarks.utils.models import (
     EvalOutput,
 )
 from openhands.agent_server.docker.build import SDK_VERSION, _base_slug
-from openhands.sdk import LLM, Agent, Conversation, get_logger
+from openhands.sdk import LLM, Agent, Conversation, LLMConvertibleEvent, get_logger
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.tools.preset.default import get_default_tools
 from openhands.workspace import DockerWorkspace
@@ -47,8 +51,21 @@ def get_agent_server_docker_image(
     official_image_name = get_official_docker_image(instance_id, docker_image_prefix)
     return (
         "ghcr.io/openhands/agent-server"
-        + f":v{SDK_VERSION}_{_base_slug(official_image_name)}_{target}"
+        + f":v{SDK_VERSION}_{_base_slug(official_image_name)}_{target}-dev"
     )
+
+
+def _safe_json(obj):
+    if isinstance(obj, ModelResponse) or isinstance(obj, ResponsesAPIResponse):
+        return obj.model_dump(mode="json", exclude_none=True)
+    if isinstance(obj, BaseModel):
+        # Use Pydantic's serializer which respects field exclusions (e.g., executors)
+        return obj.model_dump(mode="json", exclude_none=True)
+
+    try:
+        return obj.__dict__
+    except Exception as e:
+        return str(e)
 
 
 def get_instruction(
@@ -171,9 +188,41 @@ class SWEBenchEvaluation(Evaluation):
         )
 
         assert isinstance(workspace, RemoteWorkspace)
+        instance_id: str = instance.id
+        file_cnt: int = 1
+        prev_len: int = 0
+        event_list = []
 
         def _log_event(ev):  # keep it simple
-            logger.debug("Event: %s", ev)
+            log_directory = os.path.join(
+                self.metadata.eval_output_dir, "llm_logs", instance_id
+            )
+            os.makedirs(log_directory, exist_ok=True)
+            nonlocal file_cnt
+            nonlocal event_list
+            nonlocal prev_len
+            event_list.append(ev)
+            llm_convertible_events = [
+                e for e in event_list if isinstance(e, LLMConvertibleEvent)
+            ]
+            _messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)
+            llm: LLM = self.metadata.llm
+            formatted_messages = llm.format_messages_for_llm(_messages)
+            mocked_messages, _ = llm.pre_request_prompt_mock(formatted_messages, [], {})
+            if formatted_messages[-1].get("role") == "assistant":
+                return
+            log_ctx = {
+                "messages": formatted_messages[:],
+                "mock_tool_messages": mocked_messages[:],
+            }
+            if len(formatted_messages) > prev_len:
+                prev_len = len(formatted_messages)
+                log_file = os.path.join(log_directory, f"log{file_cnt}.json")
+                file_cnt += 1
+                with open(log_file, "w") as f:
+                    f.write(json.dumps(log_ctx, default=_safe_json))
+            logger.debug("Logged LLM messages")
+            return
 
         repo_path = f"/workspace/{instance.data['repo'].split('/')[-1]}/"
         instance.data["repo_path"] = repo_path
