@@ -132,6 +132,13 @@ def get_parser():
         default="/tmp/workspace/",
         help="Base directory for local workspaces (ignored for remote workspaces)",
     )
+    parser.add_argument(
+        "--instance-timeout",
+        type=int,
+        default=None,
+        help="Maximum time in seconds for a single instance evaluation. "
+             "If not set, no timeout is applied. Recommended: 600-1800 seconds.",
+    )
     return parser
 
 
@@ -365,6 +372,67 @@ def reward_function(final_message: str, instance: dict) -> dict:
         }
 
 
+def compute_summary_statistics(output_path: str) -> dict:
+    """Compute summary statistics from the output JSONL file."""
+    file_rewards = []
+    module_rewards = []
+    entity_rewards = []
+    num_steps_list = []
+    num_tool_calls_list = []
+    wall_times = []
+    total_instances = 0
+    error_count = 0
+
+    try:
+        with open(output_path, "r") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                    total_instances += 1
+                    
+                    if data.get("error"):
+                        error_count += 1
+                        continue
+                    
+                    test_result = data.get("test_result", {})
+                    reward = test_result.get("reward", {})
+                    
+                    if "file_reward" in reward:
+                        file_rewards.append(reward["file_reward"])
+                    if "module_reward" in reward:
+                        module_rewards.append(reward["module_reward"])
+                    if "entity_reward" in reward:
+                        entity_rewards.append(reward["entity_reward"])
+                    if "num_steps" in test_result:
+                        num_steps_list.append(test_result["num_steps"])
+                    if "num_tool_calls" in test_result:
+                        num_tool_calls_list.append(test_result["num_tool_calls"])
+                    if "wall_time_seconds" in test_result:
+                        wall_times.append(test_result["wall_time_seconds"])
+                except json.JSONDecodeError:
+                    continue
+    except FileNotFoundError:
+        return {"error": f"Output file not found: {output_path}"}
+
+    def safe_mean(lst):
+        return sum(lst) / len(lst) if lst else 0.0
+
+    summary = {
+        "total_instances": total_instances,
+        "successful_instances": total_instances - error_count,
+        "error_count": error_count,
+        "file_loc_f1": safe_mean(file_rewards),
+        "module_loc_f1": safe_mean(module_rewards),
+        "entity_loc_f1": safe_mean(entity_rewards),
+        "avg_num_steps": safe_mean(num_steps_list),
+        "avg_num_tool_calls": safe_mean(num_tool_calls_list),
+        "avg_wall_time_seconds": safe_mean(wall_times),
+    }
+    return summary
+
+
 class AgenticCodeSearchEvaluation(Evaluation):
     def prepare_instances(self) -> List[EvalInstance]:
         logger.info("Setting up agentic code search evaluation.")
@@ -507,52 +575,56 @@ class AgenticCodeSearchEvaluation(Evaluation):
             callbacks=[_log_event],
             max_iteration_per_run=self.metadata.max_iterations,
         )
-        conversation.send_message(instruction)
-        conversation.run()
-        history = list(map(lambda event: event.model_dump(), conversation.state.events))
-        finish_message = get_agent_final_response(conversation.state.events)
-        if finish_message == "":
-            logger.info("No final response from agent.")
-        reward_dict = reward_function(finish_message, instance.data)
-        if (
-            self.metadata.details is not None
-            and self.metadata.details["runtime"] == "local"
-        ):
-            # clean up workspace after use
-            workspace.execute_command(f"rm -rf {instance.data['repo_dir']}")
-        eval_time_elapsed = time.time() - eval_start_time
-        num_steps = 0
-        num_tool_calls = 0
-        llm_response_id_set = set()
-        for event in history:
-            event_src = event.get("source", "")
-            llm_response_id = event.get("llm_response_id", "")
-            event_kind = event.get("kind", "")
-            if not event_src == "agent" or llm_response_id == "":
-                continue
-            if event_kind == "ActionEvent":
-                num_tool_calls += 1
-            if event_src == "agent" and llm_response_id != "":
-                llm_response_id_set.add(llm_response_id)
+        try:
+            conversation.send_message(instruction)
+            conversation.run()
+            history = list(map(lambda event: event.model_dump(), conversation.state.events))
+            finish_message = get_agent_final_response(conversation.state.events)
+            if finish_message == "":
+                logger.info("No final response from agent.")
+            reward_dict = reward_function(finish_message, instance.data)
+            if (
+                self.metadata.details is not None
+                and self.metadata.details["runtime"] == "local"
+            ):
+                # clean up workspace after use
+                workspace.execute_command(f"rm -rf {instance.data['repo_dir']}")
+            eval_time_elapsed = time.time() - eval_start_time
+            num_steps = 0
+            num_tool_calls = 0
+            llm_response_id_set = set()
+            for event in history:
+                event_src = event.get("source", "")
+                llm_response_id = event.get("llm_response_id", "")
+                event_kind = event.get("kind", "")
+                if not event_src == "agent" or llm_response_id == "":
+                    continue
+                if event_kind == "ActionEvent":
+                    num_tool_calls += 1
+                if event_src == "agent" and llm_response_id != "":
+                    llm_response_id_set.add(llm_response_id)
 
-        num_steps = len(llm_response_id_set)
-        event_list = [event for event in conversation.state.events]
+            num_steps = len(llm_response_id_set)
+            event_list = [event for event in conversation.state.events]
 
-        out = EvalOutput(
-            instance_id=instance.id,
-            test_result={
-                "reward": reward_dict,
-                "raw_prediction": finish_message,
-                "wall_time_seconds": eval_time_elapsed,
-                "num_steps": num_steps,
-                "num_tool_calls": num_tool_calls,
-            },
-            instruction=instruction,
-            error=None,
-            history=event_list,
-            metrics=conversation.conversation_stats.get_combined_metrics(),
-        )
-        return out
+            out = EvalOutput(
+                instance_id=instance.id,
+                test_result={
+                    "reward": reward_dict,
+                    "raw_prediction": finish_message,
+                    "wall_time_seconds": eval_time_elapsed,
+                    "num_steps": num_steps,
+                    "num_tool_calls": num_tool_calls,
+                },
+                instruction=instruction,
+                error=None,
+                history=event_list,
+                metrics=conversation.conversation_stats.get_combined_metrics(),
+            )
+            return out
+        finally:
+            # Ensure conversation is closed to clean up tmux sessions
+            conversation.close()
 
 
 def main():
@@ -600,6 +672,7 @@ def main():
         selected_instances_file=args.select if args.select else None,
         critic=PassCritic(),
         # max_retries=args.max_retries,
+        instance_timeout=args.instance_timeout,
     )
 
     evaluator = AgenticCodeSearchEvaluation(
@@ -608,6 +681,16 @@ def main():
     evaluator.run(on_result=get_default_on_result_writer(evaluator.output_path))
     end_time = time.time()
     elapsed_time = end_time - start_time
+    
+    # Compute and save summary statistics
+    summary = compute_summary_statistics(evaluator.output_path)
+    summary["wall_time_seconds"] = elapsed_time
+    summary_path = os.path.join(structured_output_dir, "summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    logger.info(f"Summary saved to {summary_path}")
+    logger.info(f"Summary: {json.dumps(summary, indent=2)}")
+    
     # save to a .txt file
     with open(os.path.join(structured_output_dir, "time_taken.txt"), "w") as f:
         f.write(

@@ -5,6 +5,7 @@ Evaluation orchestrator.
 import base64
 import json
 import os
+import signal
 import sys
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -36,6 +37,16 @@ from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 logger = get_logger(__name__)
 
 OnResult = Callable[[EvalInstance, EvalOutput], None]
+
+
+class InstanceTimeoutError(Exception):
+    """Raised when an instance evaluation exceeds the configured timeout."""
+    pass
+
+
+def _timeout_handler(signum, frame):
+    """Signal handler for instance timeout."""
+    raise InstanceTimeoutError("Instance evaluation timed out")
 
 
 class Evaluation(ABC, BaseModel):
@@ -112,6 +123,19 @@ class Evaluation(ABC, BaseModel):
             error=(
                 f"Instance failed after {retry_count} retries. Last error: {str(error)}"
             )[:200],
+            history=[],
+            instance=instance.data,
+        )
+
+    def _create_timeout_output(
+        self, instance: EvalInstance, timeout_seconds: int
+    ) -> EvalOutput:
+        """Create an EvalOutput object for a timed-out instance."""
+        return EvalOutput(
+            instance_id=instance.id,
+            test_result={},
+            instruction=None,
+            error=f"Instance timed out after {timeout_seconds} seconds",
             history=[],
             instance=instance.data,
         )
@@ -455,6 +479,7 @@ class Evaluation(ABC, BaseModel):
         - Handles retries within the worker process
         - Tracks runtime failures and increases resource_factor exponentially
         - Ensures proper context-managed cleanup
+        - Applies instance timeout if configured
         - Returns (instance, output) so the parent can stream results
         """
         # Set up instance-specific logging
@@ -463,6 +488,30 @@ class Evaluation(ABC, BaseModel):
 
         # Get log file path for stdout/stderr redirection
         log_file = os.path.join(log_dir, f"instance_{instance.id}.output.log")
+
+        # Note: timeout is now handled inside _process_one_mp_inner
+        # after workspace preparation, so git clone etc. are not affected
+        try:
+            return self._process_one_mp_inner(instance, eval_span_ctx, log_file)
+        except InstanceTimeoutError:
+            timeout_seconds = self.metadata.instance_timeout or 0
+            logger.error(
+                f"[child] Instance {instance.id} timed out after {timeout_seconds}s"
+            )
+            return instance, self._create_timeout_output(instance, timeout_seconds)
+        except Exception as e:
+            logger.error(
+                f"[child] Instance {instance.id} failed with unexpected error: {e}",
+                exc_info=True,
+            )
+            return instance, self._create_error_output(
+                instance, e, self.metadata.max_retries
+            )
+
+    def _process_one_mp_inner(
+        self, instance: EvalInstance, eval_span_ctx: str | None, log_file: str
+    ) -> Tuple[EvalInstance, EvalOutput]:
+        """Inner implementation of instance processing (separated for timeout handling)."""
 
         # Redirect stdout/stderr to capture all output (SDK visualizations, etc.)
         with redirect_stdout_stderr(log_file):
@@ -506,7 +555,26 @@ class Evaluation(ABC, BaseModel):
                         resource_factor=resource_factor,
                         forward_env=LMNR_ENV_VARS,
                     )
-                    out = self.evaluate_instance(instance, workspace)
+                    
+                    # Set up timeout AFTER workspace preparation (so git clone etc. are not affected)
+                    timeout_seconds = self.metadata.instance_timeout
+                    old_handler = None
+                    if timeout_seconds is not None and timeout_seconds > 0:
+                        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+                        signal.alarm(timeout_seconds)
+                        logger.info(
+                            f"[child] Instance {instance.id}: evaluation timeout set to {timeout_seconds}s"
+                        )
+                    
+                    try:
+                        out = self.evaluate_instance(instance, workspace)
+                    finally:
+                        # Cancel the alarm and restore the old handler
+                        if timeout_seconds is not None and timeout_seconds > 0:
+                            signal.alarm(0)
+                            if old_handler is not None:
+                                signal.signal(signal.SIGALRM, old_handler)
+                    
                     logger.info("[child] done id=%s", instance.id)
                     return instance, out
                 except Exception as e:
