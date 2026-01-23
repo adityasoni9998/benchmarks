@@ -67,6 +67,13 @@ class EvalMetadata(BaseModel):
         le=16,
         description="Maximum resource factor to use after retries.",
     )
+    instance_timeout: int | None = Field(
+        default=None,
+        description=(
+            "Maximum time in seconds for a single instance evaluation. "
+            "If None, no timeout is applied. Recommended: 600-1800 seconds."
+        ),
+    )
     lmnr: LaminarEvalMetadata | None = Field(
         default=None,
         description="Laminar evaluation metadata",
