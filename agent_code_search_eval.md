@@ -35,7 +35,8 @@ uv run python -m benchmarks.agentic_code_search.run_infer \
 note `--max-iterations 15` is the setting used by LocAgent
 
 ## Results
-🌟 SWEBench lite (filtered), seems very close to Lintang's evaluation 
+
+### 🌟 SWEBench lite (filtered), seems very close to Lintang's evaluation 
 ```
 { 
   "total_instances": 274,
@@ -51,7 +52,7 @@ note `--max-iterations 15` is the setting used by LocAgent
 }
 ```
 
-SWEBench lite (unfiltered)
+### SWEBench lite (unfiltered)
 ```
 {
   "total_instances": 300,
@@ -66,8 +67,9 @@ SWEBench lite (unfiltered)
   "wall_time_seconds": 890.1812348365784
 }
 ```
+**So the following I used the filtered subsets:**
 
-SWEBench Pro (filtered)
+### SWEBench Pro (filtered)
 ```
 {
   "total_instances": 234,
@@ -83,7 +85,7 @@ SWEBench Pro (filtered)
 }
 ```
 
-SWEBench Verified (filtered)
+### SWEBench Verified (filtered)
 ```
 {
   "total_instances": 453,
