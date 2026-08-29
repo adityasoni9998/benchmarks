@@ -38,6 +38,68 @@ uv run python -m benchmarks.swesmith.build_images \
   --n-limit 10
 ```
 
+#### Building images with Modal VM Sandboxes
+
+`modal_build_images.py` runs one Docker daemon and BuildKit builder in an
+isolated Modal VM Sandbox for each base image. The client submits multiple
+Sandboxes concurrently, pushes the resulting eStargz images to a registry, and
+writes a result record under `.agent_tmp/`. The benchmark and
+`software-agent-sdk` revisions are pinned in the script so every worker builds
+the same source.
+
+Create the Docker registry secret once:
+
+```bash
+uv run modal secret create dockerhub-adityasoni8 \
+  REGISTRY_USERNAME=<username> \
+  REGISTRY_PASSWORD=<access-token>
+```
+
+Provide base images as newline-delimited text, JSONL records containing an
+`image_name` field, or a JSON list of image names/records. For example:
+
+```json
+[
+  {"image_name": "swebench/swesmith.x86_64.owner_1776_repo.abcdef01"},
+  "docker.io/swebench/swesmith.x86_64.other_1776_repo.abcdef02"
+]
+```
+
+Build and push a batch:
+
+```bash
+uv run modal run benchmarks/swesmith/modal_build_images.py \
+  --method push-vm-batch \
+  --base-images-file /path/to/images.json \
+  --destination-image docker.io/example/eval-agent-server \
+  --max-workers 8 \
+  --cpu 2 \
+  --memory 8192
+```
+
+Successful Docker images can then be imported and published as named Modal
+Images in a separate step:
+
+```bash
+uv run modal run benchmarks/swesmith/modal_build_images.py \
+  --method publish-results \
+  --results-file .agent_tmp/modal-build-<timestamp>/vm-sandbox.json \
+  --max-workers 8
+```
+
+Published names replace `/` with `__`. If the Modal tag exceeds its length
+limit, `.x86_64` is removed before applying deterministic shortening.
+
+The tested defaults reserve two physical CPUs and 8 GiB per build, allow 45
+minutes for the build, and allow 60 minutes for the Sandbox. Start with eight
+workers and increase `--max-workers` while monitoring registry throttling and
+network throughput. `--sandbox-v2` opts into Modal's V2 Sandbox backend for
+workloads that need substantially higher Sandbox creation rates or concurrency.
+
+For an eight-image build without registry pushes, use `--method vm`. Those
+images exist only inside their individual Sandboxes and are discarded when the
+test completes.
+
 ### Step 2: Run Inference
 
 ```bash
