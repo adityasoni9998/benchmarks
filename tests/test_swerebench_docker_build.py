@@ -143,6 +143,13 @@ def test_reinstall_script_activates_testbed_and_runs_editable_install(
     ]
 
 
+def test_dockerfile_treats_reinstall_as_best_effort() -> None:
+    dockerfile = docker_build.DOCKERFILE.read_text()
+
+    assert "if ! bash /tmp/swerebench-reinstall-testbed.sh" in dockerfile
+    assert "continuing image build" in dockerfile
+
+
 def test_wrapper_push_uses_estargz(monkeypatch, tmp_path: Path) -> None:
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text("FROM scratch\n")

@@ -7,6 +7,8 @@ ARG SWEREBENCH_INSTALL_COMMAND_B64
 
 USER root
 COPY reinstall_testbed.sh /tmp/swerebench-reinstall-testbed.sh
-RUN bash /tmp/swerebench-reinstall-testbed.sh "${SWEREBENCH_INSTALL_COMMAND_B64}" \
+RUN if ! bash /tmp/swerebench-reinstall-testbed.sh "${SWEREBENCH_INSTALL_COMMAND_B64}"; then \
+        echo "SWE-rebench /testbed reinstall failed; continuing image build" >&2; \
+    fi \
     && rm /tmp/swerebench-reinstall-testbed.sh
 USER openhands

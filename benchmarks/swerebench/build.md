@@ -57,3 +57,37 @@ Use `--push` with an authenticated registry image name to publish images. As in
 the SWE-Smith builder, pushed layers default to eStargz via
 `OPENHANDS_IMAGE_COMPRESSION=estargz`. Set that environment variable to another
 value to use the normal registry exporter.
+
+## Modal
+
+Build and push eight images concurrently in Modal VM Sandboxes:
+
+```bash
+uv run modal run benchmarks/swerebench/modal_build_images.py \
+  --method push-vm-batch \
+  --image-limit 8 \
+  --max-workers 8 \
+  --cpu 2 \
+  --memory 8192 \
+  --sandbox-v2
+```
+
+Results are written to `.agent_tmp/modal-build-<timestamp>/vm-sandbox.json`.
+Compare requested and actual CPU/memory in Modal's post-run metrics rather than
+polling the build Sandboxes. The benchmark and SDK revisions are pinned in the
+builder image, and the local reinstall files are overlaid so an uncommitted
+review build exercises the exact files under test.
+
+Publish one reproducibly random successful registry image as a named Modal
+Image with:
+
+```bash
+uv run modal run benchmarks/swerebench/modal_build_images.py \
+  --method publish-random-result \
+  --results-file .agent_tmp/modal-build-<timestamp>/vm-sandbox.json \
+  --random-seed 20260830
+```
+
+Named images follow SWE-Smith's rules: replace `/` with `__`, remove
+`.x86_64` and shorten `-source-minimal` where needed, then use an eight-character
+content hash if either Modal name component still exceeds 64 characters.
