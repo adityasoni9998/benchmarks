@@ -74,6 +74,7 @@ def run_docker_build_layer(
     platform: str = "linux/amd64",
     load: bool = True,
     no_cache: bool = False,
+    builder: str | None = None,
 ) -> BuildOutput:
     """
     Run docker buildx build to apply a custom layer on top of an existing image.
@@ -90,6 +91,7 @@ def run_docker_build_layer(
         platform: Target platform (default: linux/amd64).
         load: If True and push is False, load the image into local docker.
         no_cache: If True, pass --no-cache to disable layer cache.
+        builder: Optional buildx builder name.
 
     Returns:
         BuildOutput with tags on success, or error message on failure.
@@ -114,6 +116,9 @@ def run_docker_build_layer(
     # Build command
     cmd = ["docker", "buildx", "build", "--file", str(dockerfile_path)]
 
+    if builder:
+        cmd.extend(["--builder", builder])
+
     # Add build arguments
     if build_args:
         for key, value in build_args.items():
@@ -128,7 +133,18 @@ def run_docker_build_layer(
 
     # Push or load
     if push:
-        cmd.append("--push")
+        if os.environ.get("OPENHANDS_IMAGE_COMPRESSION") == "estargz":
+            cmd.extend(
+                [
+                    "--output",
+                    (
+                        "type=registry,compression=estargz,force-compression=true,"
+                        "oci-mediatypes=true"
+                    ),
+                ]
+            )
+        else:
+            cmd.append("--push")
         # Skip the provenance attestation manifest — each attestation registers
         # as an extra untagged package version on GHCR; see issue #684.
         cmd.append("--provenance=false")

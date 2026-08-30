@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1.7
+
+ARG SDK_IMAGE
+FROM ${SDK_IMAGE}
+
+ARG SWEREBENCH_INSTALL_COMMAND_B64
+
+USER root
+COPY reinstall_testbed.sh /tmp/swerebench-reinstall-testbed.sh
+RUN bash /tmp/swerebench-reinstall-testbed.sh "${SWEREBENCH_INSTALL_COMMAND_B64}" \
+    && rm /tmp/swerebench-reinstall-testbed.sh
+USER openhands
