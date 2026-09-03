@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import pandas as pd
 from tqdm.auto import tqdm
@@ -40,7 +40,7 @@ DEFAULT_APPTAINER_BUILD_ROOT = (
 )
 DEFAULT_APPTAINER_CACHEDIR = Path("/data/user_data/adityabs/apptainer_cache")
 DEFAULT_APPTAINER_TMPDIR = Path("/data/user_data/adityabs/apptainer_tmp")
-SWEREBENCH_REPAIR_VERSION = "swerebench-testbed-reinstall-v1"
+SWEREBENCH_REPAIR_VERSION = "swerebench-testbed-reinstall-v2"
 SWEREBENCH_DATASET_COLUMNS = [
     "instance_id",
     "repo",
@@ -54,6 +54,8 @@ class SwerebenchImageSpec:
     base_image: str
     custom_tag: str
     install_command: str | None
+    repo: str | None = None
+    instance_id: str | None = None
 
 
 def _repo_root() -> Path:
@@ -207,7 +209,10 @@ def _load_swerebench_rows(
 
     if selected_instances_file is not None:
         selected_instances = _load_selected_instances(selected_instances_file)
-        df = df[df["instance_id"].isin(selected_instances)]
+        df = cast(
+            pd.DataFrame,
+            df[df["instance_id"].isin(sorted(selected_instances))],
+        )
 
     if n_limit is not None and n_limit > 0:
         df = df.head(n_limit)
@@ -242,6 +247,8 @@ def image_spec_from_row(row: Mapping[str, object]) -> SwerebenchImageSpec:
         base_image=base_image,
         custom_tag=custom_tag,
         install_command=install_command,
+        repo=str(row["repo"]) if isinstance(row.get("repo"), str) else None,
+        instance_id=instance_id_from_row(row),
     )
 
 
@@ -639,7 +646,10 @@ def collect_unique_image_specs(
     for _, row in df.iterrows():
         spec = image_spec_from_row(row.to_dict())
         existing = specs_by_image.get(spec.base_image)
-        if existing is not None and existing != spec:
+        if existing is not None and (
+            existing.custom_tag != spec.custom_tag
+            or existing.install_command != spec.install_command
+        ):
             raise ValueError(
                 "Conflicting SWE-rebench install configs for "
                 f"{spec.base_image!r}: {existing.install_command!r} vs "

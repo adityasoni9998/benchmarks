@@ -53,6 +53,26 @@ class TestLocalImageExists:
         assert local_image_exists("myimage:latest") is False
 
 
+class TestDockerHubToken:
+    @patch("benchmarks.utils.image_utils.requests.get")
+    def test_uses_registry_credentials_when_available(self, mock_get, monkeypatch):
+        from benchmarks.utils.image_utils import _dockerhub_token
+
+        monkeypatch.setenv("REGISTRY_USERNAME", "docker-user")
+        monkeypatch.setenv("REGISTRY_PASSWORD", "docker-token")
+        response = MagicMock(ok=True)
+        response.json.return_value = {"token": "pull-token"}
+        mock_get.return_value = response
+
+        assert _dockerhub_token("owner/repo") == "pull-token"
+        mock_get.assert_called_once_with(
+            "https://auth.docker.io/token?service=registry.docker.io&scope="
+            "repository:owner/repo:pull",
+            auth=("docker-user", "docker-token"),
+            timeout=10,
+        )
+
+
 class TestCreateDockerWorkspace:
     """Tests for create_docker_workspace().
 

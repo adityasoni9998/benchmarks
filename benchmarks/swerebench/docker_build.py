@@ -150,11 +150,10 @@ def build_docker_agent_image(
         custom_tag,
     )
     if not final_tags:
-        return BuildOutput(
-            base_image=image_spec.base_image,
-            tags=[],
-            error=f"Could not derive final tags from {sdk_output.tags}",
-        )
+        # The SDK's remote-existence check can reuse its generic base-image tag
+        # instead of a custom-tag alias. That intermediate is still valid for
+        # the final reinstall layer; emit the canonical repair-specific tag.
+        final_tags = [primary_tag]
 
     encoded_install_command = base64.b64encode(
         image_spec.install_command.encode()

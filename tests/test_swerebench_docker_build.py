@@ -95,6 +95,52 @@ def test_build_adds_reinstall_layer(monkeypatch) -> None:
     assert captured["builder"] == "default"
 
 
+def test_build_reuses_generic_remote_intermediate_for_canonical_final_tag(
+    monkeypatch,
+) -> None:
+    spec = _image_spec()
+    monkeypatch.setattr(docker_build, "remote_image_exists", lambda tag: False)
+    monkeypatch.setattr(
+        docker_build,
+        "_get_sdk_submodule_info",
+        lambda: ("modal_workspace", "abcdef123456", "1.0"),
+    )
+    monkeypatch.setattr(
+        docker_build,
+        "build_image",
+        lambda **kwargs: BuildOutput(
+            base_image=kwargs["base_image"],
+            tags=[
+                "local/agent-swerebench-unrepaired:abcdef1-generic-base-tag-"
+                "source-minimal"
+            ],
+            status="skipped_remote_exists",
+            skip_reason="remote_image_exists",
+        ),
+    )
+    captured = {}
+
+    def fake_layer(**kwargs):
+        captured.update(kwargs)
+        return BuildOutput(base_image="wrapper", tags=kwargs["tags"])
+
+    monkeypatch.setattr(docker_build, "run_docker_build_layer", fake_layer)
+
+    output = docker_build.build_docker_agent_image(
+        spec,
+        target_image="local/agent",
+        push=True,
+        force_build=False,
+    )
+
+    assert output.tags == [
+        "local/agent:abcdef1-swerebench_repo-reinstall-v1-hash-source-minimal"
+    ]
+    assert captured["build_args"]["SDK_IMAGE"].endswith(
+        ":abcdef1-generic-base-tag-source-minimal"
+    )
+
+
 def test_reinstall_script_activates_testbed_and_runs_editable_install(
     tmp_path: Path,
 ) -> None:

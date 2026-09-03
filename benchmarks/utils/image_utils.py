@@ -49,7 +49,10 @@ def _parse(image: str):
 
 def _dockerhub_token(repo: str) -> str | None:
     url = f"https://auth.docker.io/token?service=registry.docker.io&scope=repository:{repo}:pull"
-    r = requests.get(url, timeout=10)
+    username = os.getenv("REGISTRY_USERNAME")
+    password = os.getenv("REGISTRY_PASSWORD")
+    auth = (username, password) if username and password else None
+    r = requests.get(url, auth=auth, timeout=10)
     if r.ok:
         return r.json().get("token")
     return None
