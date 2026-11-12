@@ -135,34 +135,32 @@ def keep_only_test_files(git_patch: str) -> str:
     return "".join(kept)
 
 
+_BINARY_DIFF_LINE = re.compile(r"^(Binary files .* differ|GIT binary patch)\r?$", re.M)
+
+
 def remove_binary_diffs(patch_text):
     """
     Remove binary file diffs from a git patch.
+
+    Drops each per-file block (from one "diff --git" line to the next) that is a
+    binary diff and keeps every other byte unchanged, including CRLF line endings
+    and the final newline, which `git apply` needs.
+
     Args:
         patch_text (str): The git patch text
     Returns:
         str: The cleaned patch text with binary diffs removed
     """
-    lines = patch_text.splitlines()
-    cleaned_lines = []
-    block = []
-    is_binary_block = False
-
-    for line in lines:
-        if line.startswith("diff --git "):
-            if block and not is_binary_block:
-                cleaned_lines.extend(block)
-            block = [line]
-            is_binary_block = False
-        elif "Binary files" in line:
-            is_binary_block = True
-            block.append(line)
-        else:
-            block.append(line)
-
-    if block and not is_binary_block:
-        cleaned_lines.extend(block)
-    return "\n".join(cleaned_lines)
+    if not patch_text:
+        return patch_text
+    starts = [m.start() for m in re.finditer(r"^diff --git ", patch_text, re.M)]
+    if not starts:
+        return patch_text
+    blocks = [patch_text[: starts[0]]] + [
+        patch_text[start:end]
+        for start, end in zip(starts, starts[1:] + [len(patch_text)])
+    ]
+    return "".join(block for block in blocks if not _BINARY_DIFF_LINE.search(block))
 
 
 def remove_binary_files_from_git():

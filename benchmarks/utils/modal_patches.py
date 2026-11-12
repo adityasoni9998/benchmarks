@@ -62,6 +62,24 @@ def _get_build_target() -> str:
     )
 
 
+# Which image Modal grades an instance on:
+#   "agent-server" (default): the prebuilt eval agent-server image,
+#       {EVAL_AGENT_SERVER_IMAGE}:{IMAGE_TAG_PREFIX}-sweb.eval.x86_64.<tag>[-<target>];
+#   "official": the official SWE-bench image, docker.io/swebench/sweb.eval.x86_64.<tag>:latest,
+#       which the Docker harness grades on (no image tag prefix needed).
+MODAL_IMAGE_SOURCE_ENV = "SWEBENCH_MODAL_IMAGE_SOURCE"
+OFFICIAL_IMAGE_REPO = "docker.io/swebench"
+
+
+def _get_modal_image_source() -> str:
+    source = os.getenv(MODAL_IMAGE_SOURCE_ENV, "").strip().lower() or "agent-server"
+    if source not in ("agent-server", "official"):
+        raise RuntimeError(
+            f"{MODAL_IMAGE_SOURCE_ENV} must be 'agent-server' or 'official', got {source!r}"
+        )
+    return source
+
+
 def _get_custom_tag_from_instance_id(instance_id: str) -> str:
     try:
         repo, name = instance_id.split("__", 1)
@@ -76,6 +94,10 @@ def _build_prebuilt_image_tag(test_spec) -> str:
     instance_id = getattr(test_spec, "instance_id", None)
     if not instance_id:
         raise RuntimeError("TestSpec missing instance_id; cannot select Modal image")
+
+    if _get_modal_image_source() == "official":
+        custom_tag = _get_custom_tag_from_instance_id(instance_id)
+        return f"{OFFICIAL_IMAGE_REPO}/{custom_tag}:latest"
 
     image_tag_prefix = _get_image_tag_prefix()
     if image_tag_prefix in ("", "unknown", None):
@@ -119,6 +141,116 @@ def _patch_modal_sklearn_install_flag() -> None:
 
     # Best-effort patch; stay silent if nothing needed or imports fail.
     return
+
+
+CGROUP_CPU_SHARES = "/sys/fs/cgroup/cpu/cpu.shares"
+
+
+def _patch_modal_sandbox_filesystem_api(
+    log_errors: bool = False, stderr: bool = False
+) -> None:
+    """Write sandbox files with Modal's Sandbox.filesystem API.
+
+    The harness writes files (the cgroup CPU share, patch.diff, eval.sh) with
+    `sandbox.open(path, "w")`, Modal's legacy filesystem API, which Modal no
+    longer serves ("The legacy Sandbox filesystem API is no longer supported").
+    The harness sets the cgroup CPU share as a pylint workaround (older pylint sizes
+    its worker pool from cgroup CPU settings). Sandboxes may not write it
+    ("permission denied"), and hyperion's Modal grader skips this write too, so a
+    failure there is logged and ignored; any other write failure is raised.
+    """
+    try:
+        from swebench.harness.modal_eval import run_evaluation_modal as mod
+    except Exception:
+        return
+
+    runtime_cls = getattr(mod, "ModalSandboxRuntime", None)
+    if runtime_cls is None:
+        return
+    original_write_file = runtime_cls.write_file
+    if getattr(original_write_file, "_benchmarks_fs_api_patch", False):
+        return
+
+    emit = _make_emit(stderr)
+
+    def write_file_with_filesystem_api(self, file_path: str, content: str):
+        filesystem = getattr(self.sandbox, "filesystem", None)
+        if filesystem is None:
+            return original_write_file(self, file_path, content)
+        try:
+            filesystem.write_text(content, str(file_path))
+        except Exception as exc:
+            if str(file_path) != CGROUP_CPU_SHARES:
+                raise
+            if log_errors:
+                emit(
+                    f"[benchmarks] could not set {CGROUP_CPU_SHARES}; continuing: {exc}"
+                )
+
+    setattr(write_file_with_filesystem_api, "_benchmarks_fs_api_patch", True)
+    runtime_cls.write_file = write_file_with_filesystem_api
+
+
+# Grading sandbox resource requests. Unset: the harness's own (cpu=4, default memory).
+# hyperion's Modal grader requests cpu=0.8, memory=128 (MiB). Modal treats both as
+# reservations, not limits.
+MODAL_SANDBOX_CPU_ENV = "SWEBENCH_MODAL_SANDBOX_CPU"
+MODAL_SANDBOX_MEMORY_ENV = "SWEBENCH_MODAL_SANDBOX_MEMORY"
+
+
+def _get_sandbox_resources() -> dict[str, float | int]:
+    resources: dict[str, float | int] = {}
+    cpu = os.getenv(MODAL_SANDBOX_CPU_ENV, "").strip()
+    memory = os.getenv(MODAL_SANDBOX_MEMORY_ENV, "").strip()
+    if cpu:
+        resources["cpu"] = float(cpu)
+    if memory:
+        resources["memory"] = int(memory)
+    return resources
+
+
+def _patch_modal_sandbox_resources() -> None:
+    """Create grading sandboxes with the configured CPU and memory requests.
+
+    Same as the harness's ModalSandboxRuntime._get_sandbox (entrypoint file,
+    30-minute default timeout, retries), with cpu/memory from the environment.
+    """
+    try:
+        import modal
+        import tenacity
+        from swebench.harness.modal_eval import run_evaluation_modal as mod
+    except Exception:
+        return
+
+    runtime_cls = getattr(mod, "ModalSandboxRuntime", None)
+    entrypoint = getattr(mod, "REMOTE_SANDBOX_ENTRYPOINT_PATH", None)
+    if runtime_cls is None or entrypoint is None:
+        return
+    original_get_sandbox = runtime_cls._get_sandbox
+    if getattr(original_get_sandbox, "_benchmarks_resources_patch", False):
+        return
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(7),
+        wait=tenacity.wait_exponential(multiplier=1, min=4, max=10),
+    )
+    def create_sandbox(self, timeout: int | None, resources: dict[str, float | int]):
+        memory = resources.get("memory")
+        return modal.Sandbox.create(
+            image=self.image.add_local_file(entrypoint, entrypoint),
+            timeout=timeout if timeout is not None else 60 * 30,
+            cpu=float(resources.get("cpu", 4)),
+            memory=int(memory) if memory is not None else None,
+        )
+
+    def get_sandbox_with_resources(self, timeout: int | None = None):
+        resources = _get_sandbox_resources()
+        if not resources:
+            return original_get_sandbox(self, timeout)
+        return create_sandbox(self, timeout, resources)
+
+    setattr(get_sandbox_with_resources, "_benchmarks_resources_patch", True)
+    runtime_cls._get_sandbox = get_sandbox_with_resources
 
 
 def _patch_modal_sandbox_cgroup_retry() -> None:
@@ -385,15 +517,9 @@ def _patch_modal_function_timeout(
         instance_id = getattr(test_spec, "instance_id", None) or pred.get(
             "instance_id", "unknown"
         )
+        # timeout_seconds bounds the whole Modal function (image builds included);
+        # the tests keep the caller's timeout (the harness's --timeout).
         effective_timeout = timeout
-        if timeout is None or timeout < timeout_seconds:
-            effective_timeout = timeout_seconds
-            print(
-                "[benchmarks] Modal function overriding timeout "
-                f"instance={instance_id} from {timeout} to {effective_timeout}",
-                file=sys.stderr,
-                flush=True,
-            )
         start = time.time()
         print(
             "[benchmarks] Modal function start "
@@ -503,6 +629,10 @@ def _inject_modal_sitecustomize() -> None:
 
     env_vars["EVAL_AGENT_SERVER_IMAGE"] = _get_agent_server_image_repo()
     env_vars["SWEBENCH_IMAGE_TARGET"] = _get_build_target()
+    env_vars[MODAL_IMAGE_SOURCE_ENV] = _get_modal_image_source()
+    for name in (MODAL_SANDBOX_CPU_ENV, MODAL_SANDBOX_MEMORY_ENV):
+        if os.getenv(name, "").strip():
+            env_vars[name] = os.environ[name].strip()
 
     patched_image = patched_image.env(env_vars)
 
@@ -759,6 +889,8 @@ def _patch_run_instances_modal_logging() -> None:
 
 def apply_host_patches() -> None:
     _patch_modal_sklearn_install_flag()
+    _patch_modal_sandbox_filesystem_api(log_errors=True, stderr=True)
+    _patch_modal_sandbox_resources()
     _patch_modal_sandbox_cgroup_retry()
     _patch_modal_prebuilt_images()
     # Inject sitecustomize before re-registering the Modal function so the
@@ -772,6 +904,8 @@ def apply_host_patches() -> None:
 
 def apply_image_patches() -> None:
     _log("[benchmarks] modal sitecustomize imported")
+    _patch_modal_sandbox_filesystem_api(log_errors=True, stderr=True)
+    _patch_modal_sandbox_resources()
     _patch_modal_prebuilt_images(log_errors=True, stderr=True)
     _patch_modal_sandbox_timing(log_errors=True, stderr=True)
     _patch_modal_runtime_debug(log_errors=True, stderr=True)
