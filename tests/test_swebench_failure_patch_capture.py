@@ -31,14 +31,12 @@ class FakeWorkspace:
 
     def execute_command(self, command, *args, **kwargs):
         self.commands.append(command)
-        if "git --no-pager diff --no-color --cached abc123" in command:
+        if "git --no-pager diff --no-color --cached " in command:
             return SimpleNamespace(
                 exit_code=0,
                 stdout="diff --git a/file.py b/file.py\n",
                 stderr="",
             )
-        if "git --no-pager diff --no-color abc123 HEAD" in command:
-            return SimpleNamespace(exit_code=0, stdout="", stderr="")
         return SimpleNamespace(exit_code=0, stdout="", stderr="")
 
 
@@ -90,5 +88,52 @@ def test_swebench_collect_failure_test_result_gets_git_patch(tmp_path):
     }
     assert workspace.commands == [
         "cd /workspace/django/ ; git add -A",
-        "cd /workspace/django/ ; git --no-pager diff --no-color --cached abc123",
+        "cd /workspace/django/ ; git --no-pager diff --no-color --cached HEAD",
+    ]
+
+
+def test_swebench_apptainer_collects_failure_patch_from_testbed(tmp_path):
+    metadata = _metadata(tmp_path).model_copy(update={"workspace_type": "apptainer"})
+    evaluation = SWEBenchEvaluation(metadata=metadata)
+    instance = EvalInstance(
+        id="django__django-12345",
+        data={"repo": "django/django", "base_commit": "abc123"},
+    )
+    workspace = FakeWorkspace()
+
+    evaluation.collect_failure_test_result(
+        instance,
+        cast(RemoteWorkspace, workspace),
+        RuntimeError("Remote conversation got stuck"),
+    )
+
+    # Apptainer agents edit the image's repository in place.
+    assert workspace.commands == [
+        "cd /testbed ; git add -A",
+        "cd /testbed ; git --no-pager diff --no-color --cached HEAD",
+    ]
+
+
+def test_swebench_patches_diff_against_recorded_start_commit(tmp_path):
+    # The SWE-bench images add a setup commit on top of base_commit; patches are
+    # taken against the commit the agent started from, which evaluate_instance records.
+    metadata = _metadata(tmp_path).model_copy(update={"workspace_type": "apptainer"})
+    evaluation = SWEBenchEvaluation(metadata=metadata)
+    start = "d350420dae50c80ca33b845734c31428d62af0a8"
+    instance = EvalInstance(
+        id="astropy__astropy-12907",
+        data={
+            "repo": "astropy/astropy",
+            "base_commit": "abc123",
+            "start_commit": start,
+        },
+    )
+    workspace = FakeWorkspace()
+
+    evaluation.get_git_patch(instance, cast(RemoteWorkspace, workspace))
+    evaluation.get_staged_git_patch(instance, cast(RemoteWorkspace, workspace))
+
+    assert workspace.commands == [
+        f"cd /testbed ; git --no-pager diff --no-color {start} HEAD",
+        f"cd /testbed ; git --no-pager diff --no-color --cached {start}",
     ]

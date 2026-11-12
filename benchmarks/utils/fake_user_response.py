@@ -119,7 +119,7 @@ def _agent_sent_message(events: list[Event]) -> bool:
 def run_conversation_with_fake_user_response(
     conversation: RemoteConversation,
     fake_user_response_fn: FakeUserResponseFn = fake_user_response,
-    max_fake_responses: int = 10,
+    max_fake_responses: int | None = None,
 ) -> None:
     """Run a conversation with automatic fake user responses.
 
@@ -137,9 +137,13 @@ def run_conversation_with_fake_user_response(
         fake_user_response_fn: A function that generates fake user responses.
             Defaults to fake_user_response.
         max_fake_responses: Maximum number of fake responses to send before
-            stopping. This prevents infinite loops.
+            stopping. This prevents infinite loops. Defaults to the
+            MAX_FAKE_RESPONSES environment variable, else 10; 0 disables fake
+            responses, so a message from the agent ends the conversation.
     """
     run_timeout = int(os.getenv("CONVERSATION_TIMEOUT", "3600"))
+    if max_fake_responses is None:
+        max_fake_responses = int(os.getenv("MAX_FAKE_RESPONSES", "10"))
 
     fake_response_count = 0
 

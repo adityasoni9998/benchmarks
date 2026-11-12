@@ -125,6 +125,9 @@ def _mock_execute_command(cmd, timeout=None):
     if "print(json.dumps(s))" in cmd:
         # commit0 report summary extraction one-liner
         result.stdout = '{"passed": 1, "total": 1, "collected": 1, "duration": 0.1}'
+    elif "git rev-parse HEAD" in cmd:
+        # swebench records the commit the agent starts from as the patch base
+        result.stdout = "0123456789abcdef0123456789abcdef01234567\n"
     else:
         result.stdout = "test output"
     return result

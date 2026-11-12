@@ -8,7 +8,8 @@ Default values aligned with evaluation repository (OpenHands/evaluation).
 # The condenser manages conversation context by automatically truncating history
 # when it exceeds max_size and replacing dropped events with an LLM-generated summary.
 CONDENSER_DEFAULTS = {
-    "enable_condenser": True,
+    # Off on this branch: hyperion training runs the agent with condenser=None.
+    "enable_condenser": False,
     "condenser_max_size": 240,  # Maximum number of events before condensing
     "condenser_keep_first": 2,  # Number of initial events to always keep
 }

@@ -13,10 +13,24 @@ from benchmarks.utils.models import EvalInstance
 
 
 class FakeApptainerWorkspace:
-    """Capture ApptainerWorkspace constructor arguments."""
+    """Capture DirectoryOverlayWorkspace constructor arguments and commands."""
 
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
+        self.commands: list[str] = []
+
+    def execute_command(self, command: str, timeout: float | None = None):
+        self.commands.append(command)
+        return SimpleNamespace(exit_code=0, stdout="", stderr="")
+
+
+def _scratch(monkeypatch, tmp_path) -> Path:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv(swebench_run_infer.APPTAINER_SCRATCH_DIR_ENV, str(scratch))
+    monkeypatch.setenv("APPTAINER_CACHEDIR", str(tmp_path / "cache"))
+    monkeypatch.delenv(swebench_run_infer.APPTAINER_SIF_DIR_ENV, raising=False)
+    return scratch
 
 
 def _evaluation():
@@ -92,11 +106,12 @@ def test_failed_forced_apptainer_rebuild_keeps_existing_sif(monkeypatch, tmp_pat
     assert existing_image.read_text() == "old working image"
 
 
-def test_apptainer_workspace_uses_registry_image_when_available(monkeypatch):
+def test_apptainer_workspace_uses_registry_image_when_available(monkeypatch, tmp_path):
+    _scratch(monkeypatch, tmp_path)
     monkeypatch.setattr(swebench_run_infer, "remote_image_exists", lambda image: True)
     monkeypatch.setattr(
         swebench_run_infer,
-        "ApptainerWorkspace",
+        "DirectoryOverlayWorkspace",
         FakeApptainerWorkspace,
     )
 
@@ -105,12 +120,13 @@ def test_apptainer_workspace_uses_registry_image_when_available(monkeypatch):
     )
 
     assert isinstance(workspace, FakeApptainerWorkspace)
-    assert "server_image" in workspace.kwargs
-    assert "sif_file" not in workspace.kwargs
+    assert workspace.kwargs["server_image"] is not None
+    assert workspace.kwargs["sif_file"] is None
     assert workspace.kwargs["extra_bind_mounts"] == []
 
 
 def test_apptainer_workspace_binds_existing_custom_tokenizer(monkeypatch, tmp_path):
+    _scratch(monkeypatch, tmp_path)
     tokenizer_dir = tmp_path / "tokenizer"
     tokenizer_dir.mkdir()
     evaluation = _evaluation()
@@ -119,7 +135,7 @@ def test_apptainer_workspace_binds_existing_custom_tokenizer(monkeypatch, tmp_pa
     monkeypatch.setattr(swebench_run_infer, "remote_image_exists", lambda image: True)
     monkeypatch.setattr(
         swebench_run_infer,
-        "ApptainerWorkspace",
+        "DirectoryOverlayWorkspace",
         FakeApptainerWorkspace,
     )
 
@@ -134,8 +150,9 @@ def test_apptainer_workspace_binds_existing_custom_tokenizer(monkeypatch, tmp_pa
 
 
 def test_apptainer_workspace_builds_local_sif_when_registry_image_missing(
-    monkeypatch,
+    monkeypatch, tmp_path
 ):
+    _scratch(monkeypatch, tmp_path)
     built = {}
 
     def fake_build(**kwargs):
@@ -150,7 +167,7 @@ def test_apptainer_workspace_builds_local_sif_when_registry_image_missing(
     )
     monkeypatch.setattr(
         swebench_run_infer,
-        "ApptainerWorkspace",
+        "DirectoryOverlayWorkspace",
         FakeApptainerWorkspace,
     )
 
@@ -160,7 +177,7 @@ def test_apptainer_workspace_builds_local_sif_when_registry_image_missing(
 
     assert isinstance(workspace, FakeApptainerWorkspace)
     assert workspace.kwargs["sif_file"] == "/tmp/local-agent.sif"
-    assert "server_image" not in workspace.kwargs
+    assert workspace.kwargs["server_image"] is None
     assert workspace.kwargs["extra_bind_mounts"] == []
     assert built["base_image"].startswith("docker.io/swebench/")
     assert built["custom_tag"] == "sweb.eval.x86_64.django_1776_django-12345"
@@ -178,3 +195,140 @@ def test_swebench_image_template_overrides_official_image(monkeypatch):
         == "ghcr.io/epoch-research/"
         "swe-bench.eval.x86_64.astropy__astropy-12907:latest"
     )
+
+
+def test_apptainer_workspace_matches_hyperion_settings(monkeypatch, tmp_path):
+    scratch = _scratch(monkeypatch, tmp_path)
+    monkeypatch.setattr(swebench_run_infer, "remote_image_exists", lambda image: True)
+    monkeypatch.setattr(
+        swebench_run_infer, "DirectoryOverlayWorkspace", FakeApptainerWorkspace
+    )
+
+    workspace = _evaluation().prepare_workspace(
+        EvalInstance(id="django__django-12345", data={})
+    )
+
+    assert isinstance(workspace, FakeApptainerWorkspace)
+    assert workspace.kwargs["working_dir"] == "/testbed"
+    assert workspace.kwargs["scratch_dir"] == str(scratch)
+    assert workspace.kwargs["cache_dir"] == str(tmp_path / "cache")
+    assert workspace.kwargs["health_check_timeout"] == 600
+    assert workspace.kwargs["detach_logs"] is False
+    assert "mount_dir" not in workspace.kwargs
+    # The agent's terminal starts with testbed activated.
+    assert workspace.commands == [
+        f"cat >> ~/.bashrc <<'EOF'\n{swebench_run_infer.ACTIVATE_TESTBED}EOF"
+    ]
+    assert "conda activate testbed" in swebench_run_infer.ACTIVATE_TESTBED
+
+
+def test_apptainer_workspace_uses_prebuilt_sif_dir(monkeypatch, tmp_path):
+    _scratch(monkeypatch, tmp_path)
+    sif_dir = tmp_path / "sif"
+    sif_dir.mkdir()
+    (sif_dir / "django__django-12345.sif").write_text("sif")
+    monkeypatch.setenv(swebench_run_infer.APPTAINER_SIF_DIR_ENV, str(sif_dir))
+    monkeypatch.setattr(
+        swebench_run_infer,
+        "remote_image_exists",
+        lambda image: (_ for _ in ()).throw(AssertionError("registry not consulted")),
+    )
+    monkeypatch.setattr(
+        swebench_run_infer, "DirectoryOverlayWorkspace", FakeApptainerWorkspace
+    )
+
+    workspace = _evaluation().prepare_workspace(
+        EvalInstance(id="django__django-12345", data={})
+    )
+
+    assert isinstance(workspace, FakeApptainerWorkspace)
+    assert workspace.kwargs["sif_file"] == str(sif_dir / "django__django-12345.sif")
+    assert workspace.kwargs["server_image"] is None
+
+
+def test_apptainer_workspace_missing_prebuilt_sif_fails(monkeypatch, tmp_path):
+    import pytest
+
+    _scratch(monkeypatch, tmp_path)
+    monkeypatch.setenv(swebench_run_infer.APPTAINER_SIF_DIR_ENV, str(tmp_path))
+
+    with pytest.raises(FileNotFoundError, match="Prebuilt Apptainer SIF not found"):
+        _evaluation().prepare_workspace(
+            EvalInstance(id="django__django-12345", data={})
+        )
+
+
+def test_apptainer_workspace_requires_scratch_dir(monkeypatch, tmp_path):
+    import pytest
+
+    monkeypatch.delenv(swebench_run_infer.APPTAINER_SCRATCH_DIR_ENV, raising=False)
+    monkeypatch.delenv(swebench_run_infer.APPTAINER_SIF_DIR_ENV, raising=False)
+    monkeypatch.setattr(swebench_run_infer, "remote_image_exists", lambda image: True)
+
+    with pytest.raises(ValueError, match=swebench_run_infer.APPTAINER_SCRATCH_DIR_ENV):
+        _evaluation().prepare_workspace(
+            EvalInstance(id="django__django-12345", data={})
+        )
+
+
+def test_apptainer_workspace_start_is_retried_like_hyperion(monkeypatch, tmp_path):
+    # Attempt 1: the constructor fails (e.g. the agent-server port was taken).
+    # Attempt 2: the sandbox starts but setup fails, so it must be cleaned up.
+    # Attempt 3: succeeds; the instance never sees the failures.
+    _scratch(monkeypatch, tmp_path)
+    sif_dir = tmp_path / "sif"
+    sif_dir.mkdir()
+    (sif_dir / "django__django-12345.sif").write_text("sif")
+    monkeypatch.setenv(swebench_run_infer.APPTAINER_SIF_DIR_ENV, str(sif_dir))
+    created: list["FlakyWorkspace"] = []
+
+    class FlakyWorkspace(FakeApptainerWorkspace):
+        def __init__(self, **kwargs: Any) -> None:
+            if not created:
+                created.append(self)
+                raise RuntimeError("Port 12345 is not available")
+            super().__init__(**kwargs)
+            created.append(self)
+            self.cleaned_up = False
+
+        def execute_command(self, command: str, timeout: float | None = None):
+            if len(created) == 2:
+                raise RuntimeError("Container process stopped unexpectedly")
+            return super().execute_command(command, timeout)
+
+        def cleanup(self) -> None:
+            self.cleaned_up = True
+
+    monkeypatch.setattr(swebench_run_infer, "DirectoryOverlayWorkspace", FlakyWorkspace)
+
+    workspace = _evaluation().prepare_workspace(
+        EvalInstance(id="django__django-12345", data={})
+    )
+
+    assert len(created) == 3
+    assert workspace is created[2]
+    assert created[1].cleaned_up and not created[2].cleaned_up
+    assert any("conda activate testbed" in c for c in created[2].commands)
+
+
+def test_apptainer_workspace_start_gives_up_after_three_attempts(monkeypatch, tmp_path):
+    import pytest
+
+    _scratch(monkeypatch, tmp_path)
+    sif_dir = tmp_path / "sif"
+    sif_dir.mkdir()
+    (sif_dir / "django__django-12345.sif").write_text("sif")
+    monkeypatch.setenv(swebench_run_infer.APPTAINER_SIF_DIR_ENV, str(sif_dir))
+    attempts: list[int] = []
+
+    def always_fails(**kwargs: Any):
+        attempts.append(1)
+        raise RuntimeError("Port 12345 is not available")
+
+    monkeypatch.setattr(swebench_run_infer, "DirectoryOverlayWorkspace", always_fails)
+
+    with pytest.raises(RuntimeError, match="Port 12345 is not available"):
+        _evaluation().prepare_workspace(
+            EvalInstance(id="django__django-12345", data={})
+        )
+    assert len(attempts) == swebench_run_infer.APPTAINER_START_ATTEMPTS == 3

@@ -28,7 +28,8 @@ def test_condenser_defaults_in_swebench_config():
     assert "enable_condenser" in CONDENSER_DEFAULTS
     assert "condenser_max_size" in CONDENSER_DEFAULTS
     assert "condenser_keep_first" in CONDENSER_DEFAULTS
-    assert CONDENSER_DEFAULTS["enable_condenser"] is True
+    # Off on this branch to match hyperion training (condenser=None).
+    assert CONDENSER_DEFAULTS["enable_condenser"] is False
     assert CONDENSER_DEFAULTS["condenser_max_size"] == 240
     assert CONDENSER_DEFAULTS["condenser_keep_first"] == 2
 
@@ -78,7 +79,9 @@ def test_condenser_defaults_in_infer_defaults():
     assert "enable_condenser" in INFER_DEFAULTS
     assert "condenser_max_size" in INFER_DEFAULTS
     assert "condenser_keep_first" in INFER_DEFAULTS
-    assert INFER_DEFAULTS["enable_condenser"] is True
+    assert (
+        INFER_DEFAULTS["enable_condenser"] is False
+    )  # hyperion training: no condenser
 
     assert "enable_condenser" in SWTBENCH_INFER_DEFAULTS
     assert "condenser_max_size" in SWTBENCH_INFER_DEFAULTS
